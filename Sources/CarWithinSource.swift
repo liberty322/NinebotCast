@@ -67,6 +67,8 @@ final class CarWithinSource: NSObject {
     private var audioPackets = 0
     private var reportedSize = CGSize.zero
     private var sentDisplay = false
+    /// 只为诊断：记录前若干帧的原始头部，用来区分「没收到数据」和「收到了但解不出来」
+    private var binaryLogCount = 0
 
     // MARK: - 初始化
 
@@ -293,6 +295,9 @@ final class CarWithinSource: NSObject {
     // MARK: - 文本消息
 
     private func handleText(_ text: String) {
+        if !text.contains("\"pong\"") {
+            Diag.log("CarWithin ← \(text.prefix(320))")
+        }
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let kind = object["type"] as? String else {
@@ -388,6 +393,12 @@ final class CarWithinSource: NSObject {
         let kind = timed ? (tag - 4) : tag
         let offset = timed ? 9 : 1
         guard data.count > offset else { return }
+
+        if binaryLogCount < 6 {
+            binaryLogCount += 1
+            let head = data.prefix(20).map { String(format: "%02x", $0) }.joined(separator: " ")
+            Diag.log("CarWithin ← 帧 tag=\(tag) kind=\(kind) len=\(data.count) head=\(head)")
+        }
 
         var stamp: UInt64?
         if timed, data.count >= 9 {

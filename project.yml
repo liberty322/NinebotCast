@@ -31,10 +31,13 @@ targets:
       path: Support/Info.plist
       properties:
         CFBundleDisplayName: Ninebot Pro+
-        CFBundleShortVersionString: "1.0.1"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "1.0.2"
+        CFBundleVersion: "4"
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: 用于连接九号仪表并发送投屏画面（UDP 5012/5013），以及连接 CarWithin 取 CarPlay 画面。
         NSCameraUsageDescription: 用于摄像头画面投屏。
         NSPhotoLibraryUsageDescription: 用于相册图片和视频投屏。

@@ -18,10 +18,14 @@ struct NinebotProHomeView: View {
     @AppStorage("nbp.preset") private var presetIndex = 0
 
     // 画面源
-    @AppStorage("nbp.carwithin") private var carwithinHost = ""
+    @AppStorage("nbp.carwithin") private var carwithinHost = "127.0.0.1:9888"
     @State private var photoItem: PhotosPickerItem?
     @State private var videoItem: PhotosPickerItem?
     @State private var cameraPosition: AVCaptureDevice.Position = .back
+
+    // CarWithin 探测
+    @State private var probeResults: [CarWithinProbe.Result] = []
+    @State private var probing = false
 
     // 参数
     @State private var profile = StreamProfile()
@@ -59,7 +63,19 @@ struct NinebotProHomeView: View {
         }
         .task(id: photoItem) { await loadPhoto() }
         .task(id: videoItem) { await loadVideo() }
-        .onAppear { logStore.log("启动 \(AppVersion.display)，本机 \(engine.localIPText)") }
+        .onAppear {
+            // 把 Diag 的每一行都引到日志面板，否则 CarWithin 出问题等于黑盒
+            Diag.sink = { [logStore] line in logStore.log(line) }
+            logStore.log("启动 \(AppVersion.display)，本机 \(engine.localIPText)")
+        }
+        .task(id: engine.carwithinStatus) {
+            if !engine.carwithinStatus.isEmpty {
+                logStore.log("CarWithin 状态：\(engine.carwithinStatus)")
+            }
+        }
+        .task(id: engine.statusText) {
+            logStore.log("引擎：\(engine.statusText)")
+        }
     }
 
     // MARK: - 仪表
@@ -116,6 +132,33 @@ struct NinebotProHomeView: View {
                 Text(engine.carwithinStatus)
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            Button {
+                runProbe()
+            } label: {
+                if probing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("正在探测 127.0.0.1 与输入的地址…")
+                    }
+                } else {
+                    Label("探测 CarWithin（找端口 / 验证能否连上）", systemImage: "antenna.radiowaves.left.and.right")
+                }
+            }
+            .disabled(probing)
+
+            if !probeResults.isEmpty {
+                ForEach(probeResults) { r in
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.circle")
+                            .foregroundColor(r.ok ? .green : .secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(r.target).font(.caption.monospaced()).bold()
+                            Text(r.detail).font(.caption2).foregroundColor(.secondary)
+                        }
+                    }
+                }
             }
 
             PhotosPicker(selection: $photoItem, matching: .images) {
@@ -349,6 +392,30 @@ struct NinebotProHomeView: View {
     }
 
     // MARK: - 动作
+
+    /// 探测 CarWithin：找出它到底监听在哪个端口，并验证从本机能不能连上
+    private func runProbe() {
+        probing = true
+        probeResults = []
+        logStore.log("开始探测 CarWithin，输入「\(carwithinHost)」")
+        Task {
+            let results = await CarWithinProbe.run(rawHost: carwithinHost)
+            await MainActor.run {
+                probeResults = results
+                probing = false
+                let hits = results.filter { $0.ok }
+                if hits.isEmpty {
+                    logStore.log("探测：没有发现任何 HTTP 服务。确认 CarWithin 正在运行且停在接收页，再试。")
+                } else {
+                    for h in hits { logStore.log("探测命中 \(h.target) → \(h.detail)") }
+                    if hits.count == 1 {
+                        carwithinHost = hits[0].target
+                        logStore.log("已自动填入 \(hits[0].target)")
+                    }
+                }
+            }
+        }
+    }
 
     private func startCasting() {
         validationMessage = ""
