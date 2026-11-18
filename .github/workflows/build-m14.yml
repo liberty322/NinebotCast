@@ -1,0 +1,43 @@
+name: Build IPA (macos-14 fallback)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Archive (no codesign)
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project NinebotProPlus.xcodeproj \
+            -scheme NinebotProPlus \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/NinebotProPlus.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            | tail -n 120
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/NinebotProPlus.xcarchive/Products/Applications/NinebotProPlus.app" build/Payload/
+          cd build
+          zip -qry NinebotProPlus-1.0.3-carplay-unsigned.ipa Payload
+          ls -lh NinebotProPlus-1.0.3-carplay-unsigned.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinebotProPlus-1.0.3-ipa
+          path: build/NinebotProPlus-1.0.3-carplay-unsigned.ipa
+          if-no-files-found: error
