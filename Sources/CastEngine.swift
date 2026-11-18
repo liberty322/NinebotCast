@@ -30,6 +30,8 @@ final class CastEngine: ObservableObject {
     @Published var avgFrameKB: Int = 0
     @Published var backlogPackets: Int = 0
     @Published var droppedFrames: Int = 0
+    /// CarWithin 直播源状态（握手 / 解码 / 断开原因），直接显示在界面上
+    @Published var carwithinStatus: String = ""
 
     private var preset: DashboardPreset = .fiveInch
     private var activeFps: Int32 = 20
@@ -54,6 +56,8 @@ final class CastEngine: ObservableObject {
     private var photoBuffer: CVPixelBuffer?
     private var videoSource: VideoFrameSource?
     private var cameraSource: CameraSource?
+    private var carwithinSource: CarWithinSource?
+    private var carwithinHost = ""
     private var cameraRotation = 0
     private var cameraPosition: AVCaptureDevice.Position = .back
 
@@ -110,6 +114,9 @@ final class CastEngine: ObservableObject {
         videoSource = nil
         cameraSource?.stop()
         cameraSource = nil
+        carwithinSource?.stop()
+        carwithinSource = nil
+        carwithinStatus = ""
         photoBuffer = nil
         photoImage = nil
     }
@@ -168,8 +175,41 @@ final class CastEngine: ObservableObject {
         cameraSource = source
     }
 
-    // MARK: - 启动 / 停止
+    /// CarWithin 直播源：iPhone 上开着 CarWithin（CarPlay 中继），这里直接取它的画面投到仪表。
+    ///
+    /// 合并前 ninebot_pro 的做法是「开两个 App + 靠 ninebot_pro 自己的 OXP 客户端去连」，
+    /// 结果因为 CarWithin 只认浏览器那套 ready/display 握手而卡在「正在请求 H.264 画面」。
+    /// 这里把握手补齐，整条链路就通了 —— 用户只需要开这一个 App。
+    func useCarWithin(host: String, rotation: Int) {
+        teardownSources()
+        let target = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else {
+            carwithinStatus = "先填 CarWithin 的地址（IP:9888）"
+            Diag.log("画面源：CarWithin 地址为空")
+            return
+        }
+        carwithinHost = target
+        startCarWithin(host: target, rotation: rotation)
+    }
 
+    /// 预设变了要按新分辨率重建（CarWithin 是按接收端上报的尺寸编码的）
+    private func startCarWithin(host: String, rotation: Int) {
+        let source = CarWithinSource(
+            hostPort: host,
+            targetWidth: preset.width,
+            targetHeight: preset.height,
+            rotation: rotation,
+            hz: Int(activeFps),
+            onStatus: { [weak self] text in
+                DispatchQueue.main.async { self?.carwithinStatus = text }
+            })
+        carwithinSource = source
+        carwithinStatus = "连接 \(host) …"
+        source.start()
+        Diag.log("画面源：CarWithin \(host) → \(preset.width)x\(preset.height) rot=\(rotation)")
+    }
+
+    // MARK: - 启动 / 停止
     /// - Parameter pingOnly: 只发 RTCP ping，不建编码器、不发视频。用于隔离闪退原因。
     /// - Parameter packetSize: RTP 分片大小（官方 1400 / APK 1380）
     /// - Parameter gop: 关键帧间隔（帧数）
@@ -420,6 +460,10 @@ final class CastEngine: ObservableObject {
             }
 
             if let videoSource, let buffer = videoSource.latestFrame() {
+                submit(buffer)
+                return
+            }
+            if let carwithinSource, let buffer = carwithinSource.latestFrame() {
                 submit(buffer)
                 return
             }

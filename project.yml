@@ -30,12 +30,12 @@ targets:
     info:
       path: Support/Info.plist
       properties:
-        CFBundleDisplayName: Ninebot Cast
-        CFBundleShortVersionString: "0.20.0"
-        CFBundleVersion: "20"
+        CFBundleDisplayName: 九号投屏
+        CFBundleShortVersionString: "0.21.0"
+        CFBundleVersion: "21"
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
-        NSLocalNetworkUsageDescription: 用于连接九号仪表并发送投屏画面（UDP 5012/5013）。
+        NSLocalNetworkUsageDescription: 用于连接九号仪表并发送投屏画面（UDP 5012/5013），以及连接 CarWithin 取 CarPlay 画面。
         NSCameraUsageDescription: 用于摄像头画面投屏。
         NSPhotoLibraryUsageDescription: 用于相册图片和视频投屏。
         UISupportedInterfaceOrientations:

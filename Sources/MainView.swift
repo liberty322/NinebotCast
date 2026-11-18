@@ -25,6 +25,8 @@ struct MainView: View {
     @AppStorage("nbc.dupKey") private var duplicateKeyframes = false
     @AppStorage("nbc.chunk1400") private var chunk1400 = true
     @AppStorage("nbc.autoStart") private var autoStart = false
+    /// CarWithin 的局域网地址（IP:9888），CarPlay 投屏用
+    @AppStorage("nbc.carwithin") private var carwithinHost = ""
     @State private var gopIndex = 25            // 关键帧间隔（帧）
     @State private var fpsIndex = 20
     @State private var bitrateIndex = 1200      // kbps
@@ -53,7 +55,7 @@ struct MainView: View {
     @State private var confirmedVideoURL: URL?
     @State private var videoConfirmed = false
 
-    @State private var sourceIndex = 0         // 0 测试图 1 图片 2 视频 3 摄像头
+    @State private var sourceIndex = 0         // 0 测试图 1 图片 2 视频 3 摄像头 4 CarPlay(CarWithin)
     @State private var rotationIndex = 0       // 图片/视频/测试图 的方向
     @State private var cameraRotationIndex = 1  // 摄像头默认 90°（竖装/横装常态）
     @State private var cameraPositionIndex = 0 // 0 后置 1 前置
@@ -272,11 +274,13 @@ struct MainView: View {
     // MARK: - 画面来源
     private var sourceCard: some View {
         card("画面来源", icon: "rectangle.on.rectangle") {
-            HStack(spacing: 8) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+                      spacing: 8) {
                 sourceTile(0, "测试图", "chart.bar.doc.horizontal")
                 sourceTile(1, "图片", "photo")
                 sourceTile(2, "视频", "video")
                 sourceTile(3, "摄像头", "camera")
+                sourceTile(4, "CarPlay", "car.fill")
             }
 
             rotationPicker
@@ -287,6 +291,8 @@ struct MainView: View {
                 videoFlow
             } else if sourceIndex == 3 {
                 cameraFlow
+            } else if sourceIndex == 4 {
+                carwithinFlow
             } else {
                 Text("彩条 + 移动方块，用来快速验证链路是否通。")
                     .font(.caption)
@@ -315,6 +321,70 @@ struct MainView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    // CarPlay：从 CarWithin 取流，一步到位投到仪表，不用再开第二个 App
+    private var carwithinFlow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "car.fill")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(accent)
+                TextField("CarWithin 地址，如 192.168.1.5:9888", text: $carwithinHost)
+                    .keyboardType(.numbersAndPunctuation)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .font(.body.monospacedDigit())
+                    .onSubmit { applySource() }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .background(fieldBackground(false))
+
+            HStack(spacing: 10) {
+                Button {
+                    applySource()
+                } label: {
+                    Label("连接 CarWithin", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(accent.opacity(0.14)))
+                        .foregroundColor(accent)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    carwithinHost = "127.0.0.1:9888"
+                    applySource()
+                } label: {
+                    Text("本机")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if !engine.carwithinStatus.isEmpty {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(engine.carwithinStatus.contains("投屏") ? accent : Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text(engine.carwithinStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Text("先在 iPhone 上开 CarWithin 并开始 CarPlay，再把它的局域网地址填这里（HTTP 端口 9888；HTTPS 9889 要写 https:// 前缀）。发送端会自动补上 CarWithin 要求的 ready / display 握手，并按仪表分辨率让它编码，再原样转给九号仪表。")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var rotationPicker: some View {
@@ -940,6 +1010,8 @@ struct MainView: View {
         case 3:
             engine.useCamera(position: cameraPositionIndex == 0 ? .back : .front,
                              rotation: rotation)
+        case 4:
+            engine.useCarWithin(host: carwithinHost, rotation: rotation)
         default:
             break
         }

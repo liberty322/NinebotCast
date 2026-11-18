@@ -16,10 +16,59 @@
 
 据此修正的实现：心跳改官方 `APP subtype 5 / [0,2]`（保留计数变体兜底）、分片 1400/1380 可切换、gop 10、新增 848×480 25fps 800kbps 预设。
 
+## CarPlay 直投（v0.21.0 新增）
+
+### 为什么原来要开两个 App
+
+| App | 干什么 | 问题 |
+|---|---|---|
+| ninebot_pro（iOS） | 把画面打包成 RTP 丢给仪表 UDP 5012 | 走的是自家 OXP 客户端，只认 OXP 那套 `hello` → `format` → 二进制帧 |
+| CarWithin | 把 CarPlay 画面用 WebSocket 发出来 | 只认浏览器那套 `ready` → `display` → 然后才推流 |
+
+两边用的都是 WebSocket + JSON + 二进制帧，但**握手完全对不上**：
+
+- ninebot_pro 连上 CarWithin 的 `/stream` 后，直接发自己的 `hello`，然后就在等 `format`；
+- CarWithin 在收到 WebSocket 升级请求后**什么都不发**，它在等接收端先自报家门：
+
+```jsonc
+{"type":"ready","decoder":"mse","viewer":"<uuid>","audioClock":false}
+{"type":"display","w":848,"h":480,"dpr":1,"sw":848,"sh":480,"hz":60,"h265":false,"fullscreen":false,"ua":"..."}
+```
+
+没有 `ready`，CarWithin 不进推流状态，`hello` / `format` / 视频帧一个都不发。所以 ninebot_pro 的日志永远停在
+`openxplay websocket已连接，正在请求h.264画面`——TCP 层连着，应用层互相等对方先开口，死锁。
+
+### 这个版本怎么修的
+
+`Sources/CarWithinSource.swift` 是一个从零写的 CarWithin 客户端，接进 NinebotCast 原有的投屏管线：
+
+1. **握手**：WebSocket 建立后立刻发 `ready`（`decoder=mse`，`audioClock=false`）+ `display`（上报仪表分辨率、`h265=false`），
+   收到 `hello` 后再补发一次 `display`（CarWithin 靠这个重选编码器）；
+2. **保活**：每秒 `{"type":"ping","t0":<微秒>}`，并处理 `pong`；
+3. **解析 `format`**：`description` 是 base64 的 `avcC`，解出 SPS/PPS → `CMVideoFormatDescriptionCreateFromH264ParameterSets`
+   → `VTDecompressionSession`（顺带兼容 `hvcC`/HEVC，万一 CarWithin 坚持发 H.265）；
+4. **拆帧**：`[0]` 是 tag，`3` 音频丢弃，`4`/`5` 表示带 8 字节时间戳的视频（`kind = tag-4`），body 从 `[9]` 或 `[1]` 起；
+   `kind==1` 即关键帧。body 本身就是 AVCC 长度前缀 NAL，直接塞 `CMBlockBuffer` 解码，不用转 Annex-B；
+5. **等关键帧**：`format` 到达或解码报错时发 `{"type":"keyframe","reason":"..."}`（限速 1 秒 1 次），避免花屏；
+6. **上屏**：解出的 `CVImageBuffer` 经 CIImage 旋转 + aspect-fill 铺满 848×480，3 块 buffer 轮换，
+   交给原来的 `produceFrame()` → VideoToolbox → RTP → UDP 5012。
+
+断线自动 3 秒重连，状态实时显示在「画面来源 → CarPlay」卡片下面。
+
+### 用法
+
+1. iPhone 上开 CarWithin，进 CarPlay；
+2. 打开本 App，「画面来源」选 **CarPlay**，填 CarWithin 的地址（默认 `192.168.1.x:9888`，HTTPS 端口 9889 要写 `https://` 前缀）；
+3. 填仪表 IP，点「开始投屏」。
+
+> iOS 上 CarPlay 的画面只有 CarWithin 拿得到（第三方 App 没有 CarPlay 视频出口），所以 CarWithin 仍要在后台跑，
+> 但**不用再切回 ninebot_pro 了**，仪表投屏由这一个 App 完成。
+
 ## 版本记录
 
 | 版本 | 变更 |
 |------|------|
+| 0.21.0 (21) | **CarPlay 直投**：内置 `CarWithinSource`，自己完成 CarWithin 要求的 `ready`/`display` 握手，解析 `format`（base64 avcC）建 `VTDecompressionSession`，按 9 字节/1 字节头拆二进制帧，1 Hz `ping` 保活，解码失败自动请求关键帧，断线 3 秒重连。画面走原有 RTP 管线投到仪表，**不再需要 ninebot_pro 同时运行**；「画面来源」新增 CarPlay 卡片（地址持久化、状态实时显示） |
 | 0.20.0 (20) | **自动投屏**：开启后每 4 秒用 RTCP 心跳探一次仪表（轻量 UDP，不做 TCP 扫描），一旦仪表回包（说明已进入接收态）就按上次设置自动开始，不用再点按钮。**关于「第一步」**：让仪表进入接收态只能由九号官方 App 经 BLE 私有协议 + 序列号派生密钥的加密握手触发（新固件还要云端 token），没有官方凭证无法替代——这一步必须手动，之后全自动 |
 | 0.19.0 (19) | **摄像头默认 90°**（摄像头与其它来源各自记忆方向）；**延迟再降**：摄像头渲染由「定时器轮询」改为**帧到即渲染**（少一层等待，最高砍掉一整帧间隔）；**画质提升**：新增画质一键档（流畅 10fps/400k · 均衡 15fps/800k · **清晰 20fps/1.2M（默认）** · 极致 25fps/2M）；仪表 IP / 预设 / 画质 / 分片等设置持久化，下次打开自动带出（IP 为空时自动填网关） |
 | 0.18.0 (18) | **降延迟**：编码器 MaxFrameDelayCount=0（不许攒帧）+ DataRateLimits 1.25 倍均值限幅（大 I 帧不再挤占发送队列）；发送 pacer 改**自适应加速**（有积压时 2→10 包/ms 追平，平时保持匀速）；积压 >120 包直接丢整帧不再入队；状态卡显示主动丢帧数 |
