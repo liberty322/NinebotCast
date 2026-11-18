@@ -88,16 +88,83 @@ def parse_avcc(record):
     return nal_length, sets
 
 
+def split(packet):
+    """和 Swift handleBinary 一一对应，含时间戳提取。"""
+    tag = packet[0]
+    timed = tag in (4, 5)
+    kind = tag - 4 if timed else tag
+    offset = 9 if timed else 1
+    stamp = None
+    if timed and len(packet) >= 9:
+        value = 0
+        for i in range(8):
+            value = (value << 8) | packet[1 + i]
+        if 0 < value < (1 << 63):
+            stamp = value
+    return timed, kind, packet[offset:], stamp
+
+
+def sniff_nal_length(avcc):
+    """和 Swift sniffNalLength 一一对应：能严格切完才认。"""
+    for size in (4, 2, 1, 3):
+        index, count, ok = 0, 0, True
+        while index + size <= len(avcc):
+            length = int.from_bytes(avcc[index:index + size], "big")
+            index += size
+            if length <= 0 or index + length > len(avcc):
+                ok = False
+                break
+            index += length
+            count += 1
+        if ok and count > 0 and index == len(avcc):
+            return size
+    return None
+
+
+def parameter_sets(avcc, length_size, hevc=False):
+    """和 Swift parameterSets 一一对应。"""
+    index, vps, sps, pps = 0, None, None, None
+    while index + length_size <= len(avcc):
+        length = int.from_bytes(avcc[index:index + length_size], "big")
+        index += length_size
+        if length <= 0 or index + length > len(avcc):
+            return None
+        head = avcc[index]
+        nal = avcc[index:index + length]
+        index += length
+        if hevc:
+            kind = (head >> 1) & 0x3F
+            if kind == 32 and vps is None:
+                vps = nal
+            elif kind == 33 and sps is None:
+                sps = nal
+            elif kind == 34 and pps is None:
+                pps = nal
+        else:
+            kind = head & 0x1F
+            if kind == 7 and sps is None:
+                sps = nal
+            elif kind == 8 and pps is None:
+                pps = nal
+    if sps is None or pps is None:
+        return None
+    if hevc and vps is not None:
+        return [vps, sps, pps]
+    return [sps, pps]
+
+
 # ---------------------------------------------------------------- 假 CarWithin
 
 class MockCarWithin(object):
     """严格按 CarWithin 的门禁发流：ready + display 齐了才发 hello/format/帧。"""
 
-    def __init__(self, port):
+    def __init__(self, port, include_description=True, in_band=False):
         self.port = port
         self.frames = []
         self.lock = threading.Lock()
         self.avcc = build_avcc(SPS, PPS)
+        self.include_description = include_description
+        self.in_band = in_band
         self.srv = None
 
     def start(self):
@@ -177,22 +244,31 @@ class MockCarWithin(object):
             # 门禁通过 → 这才开始推流
             self._send_text(sock, {"type": "hello", "page": 21, "perf": {"drop": 0},
                                    "showTouches": False, "audio": False, "securePort": 9889})
-            self._send_text(sock, {
+            fmt = {
                 "type": "format",
                 "decoder": "mse",
                 "codec": "avc1.42C01E",
-                "description": base64.b64encode(self.avcc).decode(),
                 "width": 848,
                 "height": 480,
                 "name": "CarPlay",
                 "duration": 0,
                 "timescale": 1,
-            })
+            }
+            # MSE 模式下 CarWithin 的 format 可以不带 description
+            if self.include_description:
+                fmt["description"] = base64.b64encode(self.avcc).decode()
+            self._send_text(sock, fmt)
             ts = 12345
-            body_idr = struct.pack(">I", len(IDR)) + IDR
-            body_delta = struct.pack(">I", len(DELTA)) + DELTA
+            if self.in_band:
+                # 关键帧里自带 SPS/PPS，客户端要能现挑出来
+                body_idr = (struct.pack(">I", len(SPS)) + SPS
+                            + struct.pack(">I", len(PPS)) + PPS
+                            + struct.pack(">I", len(IDR)) + IDR)
+            else:
+                body_idr = struct.pack(">I", len(IDR)) + IDR
             self._send_bin(sock, bytes([5]) + struct.pack(">Q", ts) + body_idr)
-            self._send_bin(sock, bytes([4]) + struct.pack(">Q", ts + 40000) + body_delta)
+            self._send_bin(sock, bytes([4]) + struct.pack(">Q", ts + 40000)
+                           + struct.pack(">I", len(DELTA)) + DELTA)
             self._send_bin(sock, bytes([1]) + body_idr)      # 无时间戳的关键帧
             # 保持连接，回 pong
             while True:
@@ -325,28 +401,23 @@ def test_new_client(mock):
     check("收到 3 个媒体帧", len(got["frames"]) >= 3, "得到 %d" % len(got["frames"]))
 
     if len(got["frames"]) >= 3:
-        # 完全按 Swift 里 handleBinary 的规则拆
-        def split(packet):
-            tag = packet[0]
-            timed = tag in (4, 5)
-            kind = tag - 4 if timed else tag
-            offset = 9 if timed else 1
-            return timed, kind, packet[offset:]
-
-        timed, kind, body = split(got["frames"][0])
+        timed, kind, body, stamp = split(got["frames"][0])
         check("帧1 带时间戳", timed)
         check("帧1 判定为关键帧", kind == 1)
         check("帧1 body 对齐 9 字节头", body == struct.pack(">I", len(IDR)) + IDR)
+        check("帧1 解析出大端微秒时间戳", stamp == 12345, "得到 %s" % stamp)
 
-        timed, kind, body = split(got["frames"][1])
+        timed, kind, body, stamp = split(got["frames"][1])
         check("帧2 带时间戳", timed)
         check("帧2 判定为普通帧", kind == 0)
         check("帧2 body 对齐 9 字节头", body == struct.pack(">I", len(DELTA)) + DELTA)
+        check("帧2 时间戳递增", stamp == 12345 + 40000, "得到 %s" % stamp)
 
-        timed, kind, body = split(got["frames"][2])
+        timed, kind, body, stamp = split(got["frames"][2])
         check("帧3 无时间戳", not timed)
         check("帧3 判定为关键帧（tag=1）", kind == 1)
         check("帧3 body 对齐 1 字节头", body == struct.pack(">I", len(IDR)) + IDR)
+        check("帧3 没有时间戳可用", stamp is None)
 
     # 保活：发 ping 要收到 pong
     send_json(sock, lock, {"type": "ping", "t0": 999})
@@ -367,6 +438,63 @@ def test_new_client(mock):
     sock.close()
 
 
+def test_inband_client():
+    """MSE 模式的真实情况：format 没有 description，SPS/PPS 只在关键帧里。"""
+    port = PORT + 1
+    mock = MockCarWithin(port, include_description=False, in_band=True)
+    mock.start()
+    time.sleep(0.4)
+    try:
+        sock = ws_connect(port)
+        lock = threading.Lock()
+        send_json(sock, lock, {"type": "ready", "decoder": "mse",
+                               "viewer": "33333333-3333-3333-3333-333333333333",
+                               "audioClock": False})
+        send_json(sock, lock, {"type": "display", "w": 848, "h": 480, "dpr": 1,
+                               "sw": 848, "sh": 480, "hz": 20, "h265": False,
+                               "fullscreen": False, "ua": "NinebotCast/1.0"})
+        sock.settimeout(5)
+
+        fmt, frames = None, []
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            try:
+                opcode, payload = bridge.ws_read_frame(sock)
+            except (socket.timeout, ConnectionError, OSError):
+                break
+            if opcode == OP_TEXT:
+                msg = json.loads(payload.decode("utf-8", "replace"))
+                if msg.get("type") == "format":
+                    fmt = msg
+            elif opcode == OP_BIN:
+                frames.append(payload)
+            if fmt is not None and len(frames) >= 3:
+                break
+
+        check("无 description 的 format 仍能收到", fmt is not None)
+        check("该 format 确实没有 description", "description" not in (fmt or {}),
+              "字段=%s" % sorted((fmt or {}).keys()))
+
+        if frames:
+            timed, kind, body, stamp = split(frames[0])
+            check("带内关键帧判定正确", timed and kind == 1 and stamp == 12345)
+
+            guessed = sniff_nal_length(body)
+            check("长度前缀嗅探出 4 字节", guessed == 4, "得到 %s" % guessed)
+            if guessed:
+                sets = parameter_sets(body, guessed)
+                check("从关键帧抠出 2 个参数集", sets is not None and len(sets) == 2)
+                if sets:
+                    check("抠出的 SPS 正确", sets[0] == SPS)
+                    check("抠出的 PPS 正确", sets[1] == PPS)
+                    # 用这些参数集重建 avcC，应当和服务器原本那份一致
+                    check("用带内参数集能重建可用 avcC",
+                          parse_avcc(build_avcc(sets[0], sets[1])) is not None)
+        sock.close()
+    finally:
+        mock.stop()
+
+
 def main():
     mock = MockCarWithin(PORT)
     mock.start()
@@ -380,6 +508,8 @@ def main():
     print("[3] 新客户端：ready + display")
     test_new_client(mock)
     mock.stop()
+    print("[4] MSE 真身：无 description，参数集在关键帧里")
+    test_inband_client()
     print("")
     total = len(checks)
     passed = sum(1 for c in checks if c)

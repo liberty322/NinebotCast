@@ -817,7 +817,9 @@ extension CarWithinSource: URLSessionWebSocketDelegate {
     func urlSession(_ session: URLSession,
                     webSocketTask: URLSessionWebSocketTask,
                     didOpenWithProtocol protocol: String?) {
-        Diag.log("CarWithin：WebSocket 已连接 \(protocol ?? "")")
+        // protocol 是保留字，取值必须加反引号，否则解析器当成声明关键字
+        let negotiated = `protocol` ?? ""
+        Diag.log("CarWithin：WebSocket 已连接 \(negotiated)")
         sendReady()
         sendDisplay()
         startPing()

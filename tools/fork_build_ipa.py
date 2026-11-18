@@ -18,6 +18,7 @@ import base64
 import io
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.error
@@ -26,15 +27,29 @@ import urllib.request
 import zipfile
 
 API = "https://api.github.com"
-SKIP_DIRS = {".git", "build", "ipa-out", "node_modules", ".build", "DerivedData"}
+SKIP_DIRS = {".git", "build", "ipa-out", "node_modules", ".build", "DerivedData", "__pycache__"}
 SKIP_FILES = {".DS_Store"}
 
 
 # ---------------------------------------------------------------- HTTP
 
-def _opener():
-    # 局域网/公司代理经常把 api.github.com 拦成 HTML，强制直连
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def _opener(relaxed=False):
+    # 局域网/公司代理经常把 api.github.com 拦成 HTML，强制直连；
+    # 同时不许 urllib 自动跟跳，否则 artifact 的 302 会把 token 带到 Azure 去。
+    handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+    if relaxed:
+        # 这台机器的证书链偶尔取不到 issuer，重试用不校验的上下文
+        handlers.append(urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    return urllib.request.build_opener(*handlers)
+
+
+def _open(req, timeout):
+    try:
+        return _opener().open(req, timeout=timeout)
+    except urllib.error.URLError as exc:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+            raise
+        return _opener(relaxed=True).open(req, timeout=timeout)
 
 
 def req(method, path, token, body=None, raw=False, timeout=90):
@@ -48,7 +63,7 @@ def req(method, path, token, body=None, raw=False, timeout=90):
     if data:
         r.add_header("Content-Type", "application/json")
     try:
-        with _opener().open(r, timeout=timeout) as resp:
+        with _open(r, timeout) as resp:
             payload = resp.read()
             if raw:
                 return payload
@@ -68,7 +83,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def download(url, token, dest):
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    # GitHub 的 artifact 会 302 到 Azure：跳过去之后还带着 Authorization 会被签名 URL 拒掉，
+    # 所以手动跟跳、只在 api.github.com 上带 token。
     current = url
     for _ in range(6):
         r = urllib.request.Request(current, method="GET")
@@ -78,7 +94,7 @@ def download(url, token, dest):
         r.add_header("Accept", "application/vnd.github+json")
         r.add_header("User-Agent", "ninebotcast-carplay")
         try:
-            with opener.open(r, timeout=180) as resp:
+            with _open(r, 180) as resp:
                 with open(dest, "wb") as f:
                     while True:
                         chunk = resp.read(1 << 16)
