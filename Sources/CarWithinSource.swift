@@ -168,8 +168,20 @@ final class CarWithinSource: NSObject {
         config.timeoutIntervalForRequest = 10
         config.waitsForConnectivity = false
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        let ws = session.webSocketTask(with: url)
+
+        // 浏览器连 /stream 一定带 Origin 和 UA；URLSession 默认两个都不发。
+        // CarWithin 的 handleHTTPRequest 里有 rejected 分支，缺头有可能被直接拒掉。
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        let originHost = url.host ?? "localhost"
+        let originPort = url.port.map { ":\($0)" } ?? ""
+        request.setValue("http://\(originHost)\(originPort)", forHTTPHeaderField: "Origin")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                         + "AppleWebKit/605.1.15 (KHTML, like Gecko) NinebotProPlus/1.0.2",
+                         forHTTPHeaderField: "User-Agent")
+        let ws = session.webSocketTask(with: request)
         ws.maximumMessageSize = 8 * 1024 * 1024
+        Diag.log("CarWithin：握手头 Origin=http://\(originHost)\(originPort)")
         lock.lock()
         urlSession = session
         task = ws
