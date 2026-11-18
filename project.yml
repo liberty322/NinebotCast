@@ -1,6 +1,6 @@
-name: NinebotCast
+name: NinebotProPlus
 options:
-  bundleIdPrefix: com.corpsezhao
+  bundleIdPrefix: com.hanlin
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -15,7 +15,7 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"
 
 targets:
-  NinebotCast:
+  NinebotProPlus:
     type: application
     platform: iOS
     sources:
@@ -23,16 +23,16 @@ targets:
       - path: Vendor/kcp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.corpsezhao.ninebotcast
+        PRODUCT_BUNDLE_IDENTIFIER: com.hanlin.ninebotpro.plus
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Support/BridgingHeader.h"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/kcp"
     info:
       path: Support/Info.plist
       properties:
-        CFBundleDisplayName: 九号投屏
-        CFBundleShortVersionString: "0.21.0"
-        CFBundleVersion: "21"
+        CFBundleDisplayName: Ninebot Pro+
+        CFBundleShortVersionString: "1.0.1"
+        CFBundleVersion: "3"
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
         NSLocalNetworkUsageDescription: 用于连接九号仪表并发送投屏画面（UDP 5012/5013），以及连接 CarWithin 取 CarPlay 画面。
@@ -44,10 +44,10 @@ targets:
           - UIInterfaceOrientationLandscapeRight
 
 schemes:
-  NinebotCast:
+  NinebotProPlus:
     build:
       targets:
-        NinebotCast: all
+        NinebotProPlus: all
     run:
       config: Debug
     archive:

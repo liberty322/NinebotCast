@@ -21,31 +21,31 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild archive \
-            -project NinebotCast.xcodeproj \
-            -scheme NinebotCast \
+            -project NinebotProPlus.xcodeproj \
+            -scheme NinebotProPlus \
             -configuration Release \
             -destination "generic/platform=iOS" \
-            -archivePath build/NinebotCast.xcarchive \
+            -archivePath build/NinebotProPlus.xcarchive \
             CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
-            | tail -n 80
+            | tail -n 120
 
       - name: Package IPA
         run: |
           mkdir -p build/Payload
-          cp -R "build/NinebotCast.xcarchive/Products/Applications/NinebotCast.app" build/Payload/
+          cp -R "build/NinebotProPlus.xcarchive/Products/Applications/NinebotProPlus.app" build/Payload/
           cd build
-          zip -qry NinebotCast-0.21.0-carplay-unsigned.ipa Payload
-          ls -lh NinebotCast-0.21.0-carplay-unsigned.ipa
+          zip -qry NinebotProPlus-1.0.1-carplay-unsigned.ipa Payload
+          ls -lh NinebotProPlus-1.0.1-carplay-unsigned.ipa
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NinebotCast-0.21.0-carplay-unsigned-ipa
-          path: build/NinebotCast-0.21.0-carplay-unsigned.ipa
+          name: NinebotProPlus-1.0.1-carplay-unsigned-ipa
+          path: build/NinebotProPlus-1.0.1-carplay-unsigned.ipa
           if-no-files-found: error
 
       - name: Release on tag
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/NinebotCast-0.21.0-carplay-unsigned.ipa
+          files: build/NinebotProPlus-1.0.1-carplay-unsigned.ipa
