@@ -43,13 +43,27 @@ def _opener(relaxed=False):
     return urllib.request.build_opener(*handlers)
 
 
-def _open(req, timeout):
-    try:
-        return _opener().open(req, timeout=timeout)
-    except urllib.error.URLError as exc:
-        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
-            raise
-        return _opener(relaxed=True).open(req, timeout=timeout)
+def _open(req_obj, timeout):
+    """打开请求，顺带扛住这台机器到 GitHub 的间歇性掉线。"""
+    attempts = 5
+    last = None
+    for i in range(attempts):
+        for relaxed in (False, True):
+            try:
+                return _opener(relaxed).open(req_obj, timeout=timeout)
+            except urllib.error.HTTPError:
+                raise                      # 4xx/5xx 由调用方处理，重试无意义
+            except urllib.error.URLError as exc:
+                last = exc
+                if "CERTIFICATE_VERIFY_FAILED" in str(exc) and not relaxed:
+                    continue               # 换不校验的上下文再试一次
+                break                      # 连接超时/重置：退避后整体重试
+            except OSError as exc:
+                last = exc
+                break
+        if i < attempts - 1:
+            time.sleep(2 + i * 3)
+    raise last
 
 
 def req(method, path, token, body=None, raw=False, timeout=90):
